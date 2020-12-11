@@ -20,9 +20,7 @@
 #include <patterns/copy_v_transform_reduce_in_out_nbr.cuh>
 #include <patterns/count_if_v.cuh>
 #include <patterns/transform_reduce_v.cuh>
-#include <patterns/transform_reduce_v_with_adj_matrix_row.cuh>
 #include <utilities/error.hpp>
-#include <vertex_partition_device.cuh>
 
 #include <rmm/thrust_rmm_allocator.h>
 #include <raft/handle.hpp>
@@ -38,7 +36,7 @@ namespace experimental {
 namespace detail {
 
 template <typename GraphViewType, typename result_t>
-void katz_centrality(raft::handle_t &handle,
+void katz_centrality(raft::handle_t const &handle,
                      GraphViewType const &pull_graph_view,
                      result_t *betas,
                      result_t *katz_centralities,
@@ -92,12 +90,18 @@ void katz_centrality(raft::handle_t &handle,
   // 3. katz centrality iteration
 
   // old katz centrality values
-  rmm::device_vector<result_t> adj_matrix_row_katz_centralities(
-    pull_graph_view.get_number_of_local_adj_matrix_partition_rows(), result_t{0.0});
+  rmm::device_uvector<result_t> tmp_katz_centralities(
+    pull_graph_view.get_number_of_local_vertices(), handle.get_stream());
+  rmm::device_uvector<result_t> adj_matrix_row_katz_centralities(
+    pull_graph_view.get_number_of_local_adj_matrix_partition_rows(), handle.get_stream());
+  auto new_katz_centralities = katz_centralities;
+  auto old_katz_centralities = tmp_katz_centralities.data();
   size_t iter{0};
   while (true) {
+    std::swap(new_katz_centralities, old_katz_centralities);
+
     copy_to_adj_matrix_row(
-      handle, pull_graph_view, katz_centralities, adj_matrix_row_katz_centralities.begin());
+      handle, pull_graph_view, old_katz_centralities, adj_matrix_row_katz_centralities.begin());
 
     copy_v_transform_reduce_in_nbr(
       handle,
@@ -108,14 +112,14 @@ void katz_centrality(raft::handle_t &handle,
         return static_cast<result_t>(alpha * src_val * w);
       },
       betas != nullptr ? result_t{0.0} : beta,
-      katz_centralities);
+      new_katz_centralities);
 
     if (betas != nullptr) {
-      auto val_first = thrust::make_zip_iterator(thrust::make_tuple(katz_centralities, betas));
+      auto val_first = thrust::make_zip_iterator(thrust::make_tuple(new_katz_centralities, betas));
       thrust::transform(rmm::exec_policy(handle.get_stream())->on(handle.get_stream()),
                         val_first,
                         val_first + pull_graph_view.get_number_of_local_vertices(),
-                        katz_centralities,
+                        new_katz_centralities,
                         [] __device__(auto val) {
                           auto const katz_centrality = thrust::get<0>(val);
                           auto const beta            = thrust::get<1>(val);
@@ -123,21 +127,27 @@ void katz_centrality(raft::handle_t &handle,
                         });
     }
 
-    auto diff_sum = transform_reduce_v_with_adj_matrix_row(
+    auto diff_sum = transform_reduce_v(
       handle,
       pull_graph_view,
-      katz_centralities,
-      adj_matrix_row_katz_centralities.begin(),
-      [] __device__(auto v_val, auto row_val) { return std::abs(v_val - row_val); },
+      thrust::make_zip_iterator(thrust::make_tuple(new_katz_centralities, old_katz_centralities)),
+      [] __device__(auto val) { return std::abs(thrust::get<0>(val) - thrust::get<1>(val)); },
       result_t{0.0});
 
     iter++;
 
-    if (diff_sum < static_cast<result_t>(num_vertices) * epsilon) {
+    if (diff_sum < epsilon) {
       break;
     } else if (iter >= max_iterations) {
       CUGRAPH_FAIL("Katz Centrality failed to converge.");
     }
+  }
+
+  if (new_katz_centralities != katz_centralities) {
+    thrust::copy(rmm::exec_policy(handle.get_stream())->on(handle.get_stream()),
+                 new_katz_centralities,
+                 new_katz_centralities + pull_graph_view.get_number_of_local_vertices(),
+                 katz_centralities);
   }
 
   if (normalize) {
@@ -163,7 +173,7 @@ void katz_centrality(raft::handle_t &handle,
 }  // namespace detail
 
 template <typename vertex_t, typename edge_t, typename weight_t, typename result_t, bool multi_gpu>
-void katz_centrality(raft::handle_t &handle,
+void katz_centrality(raft::handle_t const &handle,
                      graph_view_t<vertex_t, edge_t, weight_t, true, multi_gpu> const &graph_view,
                      result_t *betas,
                      result_t *katz_centralities,
@@ -190,7 +200,7 @@ void katz_centrality(raft::handle_t &handle,
 
 // explicit instantiation
 
-template void katz_centrality(raft::handle_t &handle,
+template void katz_centrality(raft::handle_t const &handle,
                               graph_view_t<int32_t, int32_t, float, true, true> const &graph_view,
                               float *betas,
                               float *katz_centralities,
@@ -202,7 +212,7 @@ template void katz_centrality(raft::handle_t &handle,
                               bool normalize,
                               bool do_expensive_check);
 
-template void katz_centrality(raft::handle_t &handle,
+template void katz_centrality(raft::handle_t const &handle,
                               graph_view_t<int32_t, int32_t, double, true, true> const &graph_view,
                               double *betas,
                               double *katz_centralities,
@@ -214,7 +224,7 @@ template void katz_centrality(raft::handle_t &handle,
                               bool normalize,
                               bool do_expensive_check);
 
-template void katz_centrality(raft::handle_t &handle,
+template void katz_centrality(raft::handle_t const &handle,
                               graph_view_t<int32_t, int64_t, float, true, true> const &graph_view,
                               float *betas,
                               float *katz_centralities,
@@ -226,7 +236,7 @@ template void katz_centrality(raft::handle_t &handle,
                               bool normalize,
                               bool do_expensive_check);
 
-template void katz_centrality(raft::handle_t &handle,
+template void katz_centrality(raft::handle_t const &handle,
                               graph_view_t<int32_t, int64_t, double, true, true> const &graph_view,
                               double *betas,
                               double *katz_centralities,
@@ -238,7 +248,7 @@ template void katz_centrality(raft::handle_t &handle,
                               bool normalize,
                               bool do_expensive_check);
 
-template void katz_centrality(raft::handle_t &handle,
+template void katz_centrality(raft::handle_t const &handle,
                               graph_view_t<int64_t, int64_t, float, true, true> const &graph_view,
                               float *betas,
                               float *katz_centralities,
@@ -250,7 +260,7 @@ template void katz_centrality(raft::handle_t &handle,
                               bool normalize,
                               bool do_expensive_check);
 
-template void katz_centrality(raft::handle_t &handle,
+template void katz_centrality(raft::handle_t const &handle,
                               graph_view_t<int64_t, int64_t, double, true, true> const &graph_view,
                               double *betas,
                               double *katz_centralities,
@@ -262,7 +272,7 @@ template void katz_centrality(raft::handle_t &handle,
                               bool normalize,
                               bool do_expensive_check);
 
-template void katz_centrality(raft::handle_t &handle,
+template void katz_centrality(raft::handle_t const &handle,
                               graph_view_t<int32_t, int32_t, float, true, false> const &graph_view,
                               float *betas,
                               float *katz_centralities,
@@ -274,7 +284,7 @@ template void katz_centrality(raft::handle_t &handle,
                               bool normalize,
                               bool do_expensive_check);
 
-template void katz_centrality(raft::handle_t &handle,
+template void katz_centrality(raft::handle_t const &handle,
                               graph_view_t<int32_t, int32_t, double, true, false> const &graph_view,
                               double *betas,
                               double *katz_centralities,
@@ -286,7 +296,7 @@ template void katz_centrality(raft::handle_t &handle,
                               bool normalize,
                               bool do_expensive_check);
 
-template void katz_centrality(raft::handle_t &handle,
+template void katz_centrality(raft::handle_t const &handle,
                               graph_view_t<int32_t, int64_t, float, true, false> const &graph_view,
                               float *betas,
                               float *katz_centralities,
@@ -298,7 +308,7 @@ template void katz_centrality(raft::handle_t &handle,
                               bool normalize,
                               bool do_expensive_check);
 
-template void katz_centrality(raft::handle_t &handle,
+template void katz_centrality(raft::handle_t const &handle,
                               graph_view_t<int32_t, int64_t, double, true, false> const &graph_view,
                               double *betas,
                               double *katz_centralities,
@@ -310,7 +320,7 @@ template void katz_centrality(raft::handle_t &handle,
                               bool normalize,
                               bool do_expensive_check);
 
-template void katz_centrality(raft::handle_t &handle,
+template void katz_centrality(raft::handle_t const &handle,
                               graph_view_t<int64_t, int64_t, float, true, false> const &graph_view,
                               float *betas,
                               float *katz_centralities,
@@ -322,7 +332,7 @@ template void katz_centrality(raft::handle_t &handle,
                               bool normalize,
                               bool do_expensive_check);
 
-template void katz_centrality(raft::handle_t &handle,
+template void katz_centrality(raft::handle_t const &handle,
                               graph_view_t<int64_t, int64_t, double, true, false> const &graph_view,
                               double *betas,
                               double *katz_centralities,

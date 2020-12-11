@@ -16,10 +16,6 @@
 #
 #=============================================================================
 
-cmake_minimum_required(VERSION 3.12 FATAL_ERROR)
-
-project(CUGRAPH_TESTS LANGUAGES C CXX CUDA)
-
 ###################################################################################################
 # - compiler function -----------------------------------------------------------------------------
 
@@ -31,6 +27,8 @@ function(ConfigureTest CMAKE_TEST_NAME CMAKE_TEST_SRC CMAKE_EXTRA_LIBS)
         PRIVATE
         "${CUB_INCLUDE_DIR}"
         "${THRUST_INCLUDE_DIR}"
+	"${CUCO_INCLUDE_DIR}"
+	"${LIBCUDACXX_INCLUDE_DIR}"
         "${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES}"
         "${GTEST_INCLUDE_DIR}"
         "${RMM_INCLUDE}"
@@ -248,12 +246,22 @@ set(SCC_TEST_SRC
 ConfigureTest(SCC_TEST "${SCC_TEST_SRC}" "")
 
 ###################################################################################################
-# - FIND_MATCHES tests ----------------------------------------------------------------------------
+#-Hungarian (Linear Assignment Problem)  tests ---------------------------------------------------------------------
 
-set(FIND_MATCHES_TEST_SRC
-    "${CMAKE_CURRENT_SOURCE_DIR}/db/find_matches_test.cu")
+set(HUNGARIAN_TEST_SRC
+    "${CMAKE_CURRENT_SOURCE_DIR}/linear_assignment/hungarian_test.cu")
 
-ConfigureTest(FIND_MATCHES_TEST "${FIND_MATCHES_TEST_SRC}" "")
+ConfigureTest(HUNGARIAN_TEST "${HUNGARIAN_TEST_SRC}" "")
+
+###################################################################################################
+# - MST tests ----------------------------------------------------------------------------
+
+set(MST_TEST_SRC
+    "${CMAKE_SOURCE_DIR}/../thirdparty/mmio/mmio.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tree/mst_test.cu")
+
+ConfigureTest(MST_TEST "${MST_TEST_SRC}" "")
+
 
 ###################################################################################################
 # - Experimental Graph tests ----------------------------------------------------------------------
@@ -290,6 +298,16 @@ set(EXPERIMENTAL_PAGERANK_TEST_SRCS
     "${CMAKE_CURRENT_SOURCE_DIR}/experimental/pagerank_test.cpp")
 
 ConfigureTest(EXPERIMENTAL_PAGERANK_TEST "${EXPERIMENTAL_PAGERANK_TEST_SRCS}" "")
+
+###################################################################################################
+# - Experimental LOUVAIN tests -------------------------------------------------------------------
+
+# FIXME: Re-enable once failures are fixed
+#set(EXPERIMENTAL_LOUVAIN_TEST_SRCS
+#    "${CMAKE_SOURCE_DIR}/../thirdparty/mmio/mmio.c"
+#    "${CMAKE_CURRENT_SOURCE_DIR}/experimental/louvain_test.cu")
+#
+#ConfigureTest(EXPERIMENTAL_LOUVAIN_TEST "${EXPERIMENTAL_LOUVAIN_TEST_SRCS}" "")
 
 ###################################################################################################
 # - Experimental KATZ_CENTRALITY tests ------------------------------------------------------------
